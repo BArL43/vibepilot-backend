@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: vibepilot-api
+    runtime: python
+    plan: free
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: CORS_ORIGINS
+        value: https://vibepilot-demo.leeburns6686.chatgpt.site
+      - key: VIBE_API_BASE
+        value: https://lk.vibemarketolog.ru/api/agent
+      - key: VIBE_API_TOKEN
+        sync: false
+      - key: VIBEPILOT_LIVE_KEY
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: VIBE_WEBHOOK_SECRET
+        sync: false
+      - key: RECEIPT_SIGNING_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: VIBE_REQUEST_TIMEOUT_SECONDS
+        value: "120"
+      - key: VIBE_RETRY_ATTEMPTS
+        value: "3"

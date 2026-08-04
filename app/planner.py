@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+from typing import Any
+
+from app.models import CampaignRequest, Step
+
+
+class CatalogError(ValueError):
+    pass
+
+
+def _numeric(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    return None
+
+
+def _models(catalog: dict[str, Any], media_type: str) -> dict[str, dict[str, Any]]:
+    raw = catalog.get("models", {}).get(media_type, {})
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items() if isinstance(value, dict)}
+
+
+def _text_models(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = catalog.get("text_models", {}).get("models", {})
+    if isinstance(raw, dict) and raw:
+        return {key: value for key, value in raw.items() if isinstance(value, dict)}
+    return _models(catalog, "text")
+
+
+def _catalog_cost(media_type: str, spec: dict[str, Any]) -> float:
+    if media_type == "text":
+        return (
+            _numeric(spec.get("sample_cost_rub"))
+            or _numeric(spec.get("min_charge_rub"))
+            or 0
+        )
+    return _numeric(spec.get("price")) or 0
+
+
+def _cheapest(
+    entries: dict[str, dict[str, Any]], media_type: str
+) -> tuple[str, dict[str, Any]]:
+    eligible = [
+        (name, spec)
+        for name, spec in entries.items()
+        if _catalog_cost(media_type, spec) > 0
+        and set(spec.get("required", ["prompt"])) <= {"prompt"}
+    ]
+    if not eligible:
+        raise CatalogError(f"No usable {media_type} model in /capabilities")
+    return min(eligible, key=lambda item: _catalog_cost(media_type, item[1]))
+
+
+def _preferred(
+    entries: dict[str, dict[str, Any]],
+    media_type: str,
+    names: list[str],
+) -> tuple[str, dict[str, Any]]:
+    for name in names:
+        spec = entries.get(name)
+        if spec and set(spec.get("required", ["prompt"])) <= {"prompt"}:
+            return name, spec
+    return _cheapest(entries, media_type)
+
+
+def _approval(cost: float, threshold: float) -> tuple[bool, str | None]:
+    required = cost > threshold
+    if not required:
+        return False, None
+    return (
+        True,
+        f"Свежая смета {cost:.2f} ₽ выше порога подтверждения {threshold:.2f} ₽.",
+    )
+
+
+def apply_approval_policy(step: Step, threshold: float) -> None:
+    required, reason = _approval(step.estimated_cost_rub, threshold)
+    step.requires_approval = required
+    step.approval_reason = reason
+
+
+def estimate_cost_from_response(payload: dict[str, Any]) -> float:
+    """Use the API's upper bound for budget admission, not a made-up average."""
+    for key in ("reserve_rub", "estimated_cost_rub", "cost"):
+        value = _numeric(payload.get(key))
+        if value is not None:
+            return value
+    raise CatalogError("/generate/estimate did not return a price field")
+
+
+def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]:
+    text = _text_models(catalog)
+    images = _models(catalog, "image")
+    videos = _models(catalog, "video")
+    if not text or not images:
+        raise CatalogError("/capabilities has no usable text or image catalog")
+
+    concept_model, concept_spec = _preferred(
+        text, "text", ["claude-opus-5", "gpt-5.6-sol"]
+    )
+    critic_candidates = [name for name in text if name != concept_model]
+    if critic_candidates:
+        critic_model = min(
+            critic_candidates,
+            key=lambda name: _catalog_cost("text", text[name]),
+        )
+        critic_spec = text[critic_model]
+    else:
+        critic_model, critic_spec = concept_model, concept_spec
+
+    if request.priority == "quality":
+        image_preferences = [
+            "seedream-5-pro",
+            "gpt-image-2",
+            "nano-banana-2-2k",
+        ]
+    elif request.priority == "balanced":
+        image_preferences = ["nano-banana-2-lite", "z-image"]
+    else:
+        image_preferences = ["z-image", "nano-banana-2-lite"]
+    image_model, image_spec = _preferred(images, "image", image_preferences)
+    image_cost = _catalog_cost("image", image_spec)
+
+    text_tokens = {"economy": 350, "balanced": 600, "quality": 900}[request.priority]
+    steps = [
+        Step(
+            id="concepts",
+            title="Концепции",
+            purpose="Три рекламные гипотезы из бизнес-брифа",
+            media_type="text",
+            model=concept_model,
+            cost_rub=_catalog_cost("text", concept_spec),
+            estimated_cost_rub=_catalog_cost("text", concept_spec),
+            initial_estimated_cost_rub=_catalog_cost("text", concept_spec),
+            pricing_source="vibe_capabilities",
+            duration_hint="синхронный ответ",
+            reason="Модель выбрана только из живого каталога /capabilities.",
+            request_payload={
+                "type": "text",
+                "model": concept_model,
+                "system": (
+                    "Ты стратег performance-маркетинга. Пиши по-русски, "
+                    "конкретно и без выдуманных фактов. Верни ровно 3 концепции."
+                ),
+                "prompt": (
+                    f"Разработай три рекламные концепции по брифу:\n{request.brief}"
+                ),
+                "max_tokens": text_tokens,
+                "effort": "low",
+                "thinking": False,
+                "strict": True,
+            },
+        ),
+        Step(
+            id="selection",
+            title="Независимый отбор",
+            purpose="Критика концепций по рубрике и выбор победителя",
+            media_type="text",
+            model=critic_model,
+            cost_rub=_catalog_cost("text", critic_spec),
+            estimated_cost_rub=_catalog_cost("text", critic_spec),
+            initial_estimated_cost_rub=_catalog_cost("text", critic_spec),
+            pricing_source="vibe_capabilities",
+            duration_hint="синхронный ответ",
+            reason=(
+                "Используется другая модель, когда каталог это позволяет: "
+                "генератор не оценивает сам себя."
+            ),
+            request_payload={
+                "type": "text",
+                "model": critic_model,
+                "system": (
+                    "Ты строгий креативный директор. Оцени идеи по ясности оффера, "
+                    "релевантности ЦА, отличимости и риску недоказуемых обещаний. "
+                    "Верни только JSON: {winner, rubric:[{concept, clarity, "
+                    "audience_fit, distinctiveness, claims_safety, total, reasons}], "
+                    "risks, banner_prompt}. Каждая оценка 0..10; total — сумма "
+                    "четырёх оценок, а не субъективная вероятность успеха."
+                ),
+                "prompt": (
+                    f"Бриф:\n{request.brief}\n\n"
+                    "Ниже будут концепции предыдущего шага. Выбери одну, объясни "
+                    "решение и напиши безопасный промпт для рекламного баннера."
+                ),
+                "max_tokens": text_tokens,
+                "effort": "low",
+                "thinking": False,
+                "strict": True,
+            },
+        ),
+        Step(
+            id="banner",
+            title="Баннер",
+            purpose="Квадратный креатив победившей концепции",
+            media_type="image",
+            model=image_model,
+            cost_rub=image_cost,
+            estimated_cost_rub=image_cost,
+            initial_estimated_cost_rub=image_cost,
+            pricing_source="vibe_capabilities",
+            duration_hint="обычно 30–90 сек",
+            reason="Модель и базовая цена получены из /capabilities.",
+            request_payload={
+                "type": "image",
+                "model": image_model,
+                "prompt": (
+                    "Квадратный рекламный креатив, чистая композиция, свободное "
+                    f"место под оффер. Бизнес-бриф: {request.brief}"
+                ),
+                "aspect_ratio": "1:1",
+                "strict": True,
+            },
+            fallback_payloads=[
+                {
+                    "type": "image",
+                    "model": name,
+                    "prompt": (
+                        "Квадратный рекламный креатив, чистая композиция, "
+                        "свободное место под оффер. "
+                        f"Бизнес-бриф: {request.brief}"
+                    ),
+                    "aspect_ratio": "1:1",
+                    "strict": True,
+                }
+                for name, spec in sorted(
+                    images.items(), key=lambda item: _catalog_cost("image", item[1])
+                )
+                if name != image_model
+                and 0 < _catalog_cost("image", spec) < image_cost
+                and set(spec.get("required", ["prompt"])) <= {"prompt"}
+            ],
+        ),
+    ]
+
+    if request.include_video:
+        if not videos:
+            raise CatalogError("/capabilities has no usable video catalog")
+        video_model, video_spec = _preferred(
+            videos,
+            "video",
+            ["pixverse-v6", "seedance-2-mini", "veo3_fast", "grok-ttv"],
+        )
+        tiers = video_spec.get("tiers")
+        if isinstance(tiers, list) and tiers and isinstance(tiers[0], str):
+            # Some capability entries are price families; /generate accepts a tier.
+            video_model = tiers[0]
+        video_payload: dict[str, Any] = {
+            "type": "video",
+            "model": video_model,
+            "prompt": (
+                "Короткая спокойная видеоадаптация рекламной концепции без "
+                f"мелкого текста. Бизнес-бриф: {request.brief}"
+            ),
+            "strict": True,
+        }
+        if video_model == "pixverse-v6":
+            video_payload.update(
+                {
+                    "pv_mode": "text",
+                    "duration": 3,
+                    "resolution": "360p",
+                    "aspect_ratio": "1:1",
+                    "generate_audio": False,
+                }
+            )
+        elif video_model == "seedance-2-mini":
+            video_payload.update(
+                {"duration": 4, "resolution": "480p", "aspect_ratio": "1:1"}
+            )
+        elif video_model.startswith("veo3"):
+            video_payload.update(
+                {"duration": 8, "resolution": "720p", "aspect_ratio": "1:1"}
+            )
+
+        video_cost = _catalog_cost("video", video_spec)
+        steps.extend(
+            [
+                Step(
+                    id="preflight",
+                    title="Предсписательная проверка",
+                    purpose=(
+                        "Повторная бесплатная валидация цены и параметров прямо "
+                        "перед самым дорогим шагом"
+                    ),
+                    kind="guard",
+                    media_type="guard",
+                    model="POST /generate/estimate",
+                    pricing_source="free",
+                    duration_hint="бесплатно, до запуска",
+                    reason=(
+                        "Ловит изменение цены, несовместимые параметры и выход за "
+                        "бюджет до списания."
+                    ),
+                ),
+                Step(
+                    id="video",
+                    title="Видео",
+                    purpose="Короткая видеоадаптация одобренного баннера",
+                    media_type="video",
+                    model=video_model,
+                    cost_rub=video_cost,
+                    estimated_cost_rub=video_cost,
+                    initial_estimated_cost_rub=video_cost,
+                    pricing_source="vibe_capabilities",
+                    duration_hint="асинхронно; статус подтверждается polling",
+                    reason=(
+                        "Дешёвый совместимый вариант выбран из актуального каталога; "
+                        "финальная цена всегда перепроверяется через estimate."
+                    ),
+                    request_payload=video_payload,
+                    fallback_payloads=[{"_fallback_action": "skip"}],
+                ),
+            ]
+        )
+
+    for step in steps:
+        if step.kind == "generation":
+            apply_approval_policy(step, request.approval_required_above_rub)
+    return steps
