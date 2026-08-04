@@ -1,1 +1,0 @@
-"""VibePilot backend package."""
