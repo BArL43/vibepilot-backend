@@ -74,6 +74,9 @@ class FakeVibeClient:
         self.generate_calls: list[tuple[dict[str, Any], str]] = []
         self.estimate_calls: list[dict[str, Any]] = []
         self.estimate_overrides: dict[str, float] = {}
+        self.prompt_limits: dict[str, int] = {}
+        self.invalid_estimate_models: set[str] = set()
+        self.selection_text_override: str | None = None
         self.fail_on_model: str | None = None
         self._generation_counter = 100
         self._generation_costs: dict[int, float] = {}
@@ -93,6 +96,34 @@ class FakeVibeClient:
         self.estimate_calls.append(dict(payload))
         media_type = payload["type"]
         model = str(payload["model"])
+        if model in self.invalid_estimate_models:
+            return VibeResponse(
+                {
+                    "valid": False,
+                    "warnings": ["provider validation rejected this request"],
+                    "rejected": [],
+                    "validation": {"media": [], "required_missing": []},
+                },
+                f"req_estimate_{len(self.estimate_calls)}",
+                200,
+            )
+        prompt_limit = self.prompt_limits.get(model)
+        prompt = str(payload.get("prompt", ""))
+        if prompt_limit is not None and len(prompt) > prompt_limit:
+            return VibeResponse(
+                {
+                    "valid": False,
+                    "warnings": [
+                        f"Prompt is too long: {len(prompt)} characters, model "
+                        f'"{model}" accepts at most {prompt_limit}. '
+                        "/generate would reject this request (nothing charged)."
+                    ],
+                    "rejected": [],
+                    "validation": {"media": [], "required_missing": []},
+                },
+                f"req_estimate_{len(self.estimate_calls)}",
+                200,
+            )
         override = self.estimate_overrides.get(model)
         if media_type == "text":
             reserve = override or (4 if model == "claude-opus-5" else 5)
@@ -129,7 +160,7 @@ class FakeVibeClient:
             cost = 2.1 if payload["model"] == "claude-opus-5" else 2.2
             text = f"result from {payload['model']}"
             if payload["model"] == "gpt-5.6-sol":
-                text = json.dumps(
+                text = self.selection_text_override or json.dumps(
                     {
                         "winner": "concept-1",
                         "rubric": [
@@ -434,6 +465,73 @@ def test_runtime_price_spike_uses_cheaper_catalog_fallback_before_spend(
         event["event"] == "fallback_applied_before_spend"
         for event in completed["audit"]
     )
+
+
+def test_runtime_prompt_limit_compacts_truncated_critic_output_before_spend(
+    configured_app: FakeVibeClient,
+) -> None:
+    configured_app.prompt_limits["z-image"] = 1000
+    configured_app.selection_text_override = (
+        '{"winner":"Safe morning concept","rubric":"' + "x" * 1800
+    )
+    planned = client.post(
+        "/api/v1/workflows/plan",
+        json=campaign(
+            budget_rub=20,
+            priority="economy",
+            include_video=False,
+            execution_mode="live",
+            approval_required_above_rub=50,
+        ),
+        headers=LIVE_HEADERS,
+    ).json()
+
+    running = client.post(
+        f"/api/v1/workflows/{planned['id']}/execute", headers=LIVE_HEADERS
+    ).json()
+    banner = running["steps"][2]
+    submitted_prompt = configured_app.generate_calls[-1][0]["prompt"]
+
+    assert running["status"] == "running"
+    assert banner["status"] == "running"
+    assert banner["model"] == "z-image"
+    assert len(submitted_prompt) <= 1000
+    assert "Safe morning concept" in submitted_prompt
+    assert banner["applied_fallback"].startswith(
+        "prompt compacted after upstream validation"
+    )
+    assert any(
+        event["event"] == "prompt_compacted_after_validation"
+        for event in running["audit"]
+    )
+
+
+def test_runtime_validation_failure_returns_422_instead_of_500(
+    configured_app: FakeVibeClient,
+) -> None:
+    planned = client.post(
+        "/api/v1/workflows/plan",
+        json=campaign(
+            include_video=False,
+            execution_mode="live",
+            approval_required_above_rub=50,
+        ),
+        headers=LIVE_HEADERS,
+    ).json()
+    configured_app.invalid_estimate_models.add("claude-opus-5")
+
+    response = client.post(
+        f"/api/v1/workflows/{planned['id']}/execute", headers=LIVE_HEADERS
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "runtime_validation_rejected"
+    assert response.json()["detail"]["failed_action_charged_rub"] == 0
+    saved = client.get(
+        f"/api/v1/workflows/{planned['id']}", headers=LIVE_HEADERS
+    ).json()
+    assert saved["status"] == "error"
+    assert saved["actual_spend_rub"] == 0
 
 
 def test_price_drift_policy_requires_approval_even_below_absolute_threshold(

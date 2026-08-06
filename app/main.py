@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 import uuid
 from asyncio import Lock
@@ -44,7 +45,7 @@ from app.receipts import ReceiptSigner, verify_signed_receipt
 from app.store import StateStore, StoreConflict
 from app.vibe_client import VibeAPIError, VibeClient, VibeResponse
 
-API_VERSION = "0.3.0"
+API_VERSION = "0.3.1"
 SETTINGS = Settings.from_env()
 STATE_STORE = StateStore(SETTINGS.database_url)
 RECEIPT_SIGNER = ReceiptSigner(SETTINGS.receipt_signing_key)
@@ -269,8 +270,67 @@ async def vibe_error_handler(_: object, exc: VibeAPIError) -> JSONResponse:
     return _upstream_error_response(exc)
 
 
+@app.exception_handler(CatalogError)
+async def catalog_error_handler(_: object, exc: CatalogError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "runtime_validation_rejected",
+                "message": str(exc),
+                "failed_action_charged_rub": 0,
+            }
+        },
+    )
+
+
 def _estimate_is_valid(data: dict[str, Any]) -> bool:
     return data.get("valid", True) is not False
+
+
+def _json_string_field(raw: str, field: str) -> str | None:
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"', raw)
+    if match is None:
+        return None
+    try:
+        value = json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return match.group(1)
+    return value if isinstance(value, str) else None
+
+
+def _prompt_limit_from_error(exc: CatalogError) -> int | None:
+    message = str(exc)
+    if "Prompt is too long" not in message:
+        return None
+    match = re.search(r"accepts at most\s+(\d+)", message, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    limit = int(match.group(1))
+    return limit if limit > 0 else None
+
+
+def _compact_dependent_prompt(prompt: str, limit: int) -> str:
+    """Preserve the brief and the useful decision, not a truncated rubric dump."""
+    marker = "\n\nРешение креативного директора:\n"
+    base, separator, decision = prompt.partition(marker)
+    if not separator:
+        compact = " ".join(prompt.split())
+    else:
+        banner_prompt = _json_string_field(decision, "banner_prompt")
+        winner = _json_string_field(decision, "winner")
+        compact = base.rstrip()
+        if banner_prompt:
+            compact += f"\n\nВизуальное решение: {banner_prompt}"
+        elif winner:
+            compact += f"\n\nВыбранная концепция: {winner}"
+
+    if len(compact) <= limit:
+        return compact
+    shortened = compact[:limit].rstrip()
+    if " " in shortened:
+        shortened = shortened.rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return shortened or compact[:limit]
 
 
 async def _estimate_step(
@@ -373,6 +433,38 @@ async def _runtime_estimate_with_fallbacks(
     except (CatalogError, VibeAPIError) as exc:
         response = None
         primary_error = exc
+        prompt = step.request_payload.get("prompt")
+        prompt_limit = (
+            _prompt_limit_from_error(exc) if isinstance(exc, CatalogError) else None
+        )
+        if isinstance(prompt, str) and prompt_limit is not None:
+            compacted = _compact_dependent_prompt(prompt, prompt_limit)
+            if compacted != prompt:
+                step.request_payload = deepcopy(original_payload)
+                step.request_payload["prompt"] = compacted
+                _attach_callback(step)
+                try:
+                    response = await _estimate_step(
+                        client, step, pricing_source="runtime_estimate"
+                    )
+                except (CatalogError, VibeAPIError) as compacted_error:
+                    primary_error = compacted_error
+                else:
+                    original_payload = deepcopy(step.request_payload)
+                    primary_error = None
+                    step.applied_fallback = (
+                        "prompt compacted after upstream validation: "
+                        f"{len(prompt)} -> {len(compacted)} chars"
+                    )
+                    _audit(
+                        workflow,
+                        "prompt_compacted_after_validation",
+                        step=step,
+                        request_id=response.request_id,
+                        original_chars=len(prompt),
+                        compacted_chars=len(compacted),
+                        upstream_limit_chars=prompt_limit,
+                    )
     available = max(0, workflow.remaining_budget_rub - workflow.reserve_rub)
     if response is not None and step.estimated_cost_rub <= available:
         return response
