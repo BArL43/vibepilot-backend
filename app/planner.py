@@ -143,11 +143,19 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
                 "type": "text",
                 "model": concept_model,
                 "system": (
-                    "Ты стратег performance-маркетинга. Пиши по-русски, "
-                    "конкретно и без выдуманных фактов. Верни ровно 3 концепции."
+                    "Ты стратег performance-маркетинга. Пиши по-русски, конкретно "
+                    "и без выдуманных фактов. Верни только валидный JSON без markdown: "
+                    '{"concepts":[{"id":"concept-1","name":"...","hook":"...",'
+                    '"idea":"...","audience":"...","visual_direction":"..."},'
+                    '{"id":"concept-2","name":"...","hook":"...","idea":"...",'
+                    '"audience":"...","visual_direction":"..."},{"id":"concept-3",'
+                    '"name":"...","hook":"...","idea":"...","audience":"...",'
+                    '"visual_direction":"..."}]}. Ровно три концепции.'
                 ),
                 "prompt": (
-                    f"Разработай три рекламные концепции по брифу:\n{request.brief}"
+                    f"Разработай три заметно разные рекламные концепции по брифу:\n"
+                    f"{request.brief}\n\nКаждая концепция должна быть пригодна для "
+                    "баннера 1:1 и короткого рекламного видео."
                 ),
                 "max_tokens": text_tokens,
                 "effort": "low",
@@ -281,19 +289,20 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
             [
                 Step(
                     id="preflight",
-                    title="Предсписательная проверка",
+                    title="QA + предсписательная проверка",
                     purpose=(
-                        "Повторная бесплатная валидация цены и параметров прямо "
-                        "перед самым дорогим шагом"
+                        "Проверка готовности баннера, трассировки решения и бюджета, "
+                        "затем повторная бесплатная валидация цены видео"
                     ),
                     kind="guard",
                     media_type="guard",
-                    model="POST /generate/estimate",
+                    model="VibePilot QA + POST /generate/estimate",
                     pricing_source="free",
-                    duration_hint="бесплатно, до запуска",
+                    duration_hint="бесплатно, до запуска видео",
                     reason=(
-                        "Ловит изменение цены, несовместимые параметры и выход за "
-                        "бюджет до списания."
+                        "После баннера проверяются наличие результата, generation_id, "
+                        "связь с решением креативного директора и бюджетный конверт; "
+                        "затем цена видео повторно проверяется до списания."
                     ),
                 ),
                 Step(

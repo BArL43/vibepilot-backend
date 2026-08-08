@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="VibePilot — AI-конвейер рекламных креативов с контролем бюджета на Vibe Marketolog Agent API" />
+  <title>VibePilot — AI Campaign Control</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#top" aria-label="VibePilot">
+        <span class="brand-mark"><span></span><span></span></span>
+        <span><b>Vibe</b>Pilot<small>powered by Vibe Marketolog</small></span>
+      </a>
+      <nav>
+        <button class="nav-item active" data-view="planner"><span>✦</span>Новая кампания</button>
+        <button class="nav-item" data-view="workspace"><span>◫</span>Производство</button>
+        <button class="nav-item" data-view="receipt"><span>✓</span>Квитанция</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span>Подключение</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="api-state"><i id="apiDot"></i><div><b id="apiLabel">Проверяем API</b><small id="apiMeta">Render backend</small></div></div>
+        <p>API-ключ Vibe Marketolog остаётся на сервере. Браузер получает только результаты.</p>
+      </div>
+    </aside>
+
+    <main id="top">
+      <header class="topbar">
+        <div><p class="eyebrow">AI CAMPAIGN FACTORY</p><h1 id="pageTitle">Кампания от идеи до видео</h1></div>
+        <div class="top-actions"><button class="ghost-mini" id="showHow">Как работает</button><span class="mode-badge" id="globalMode">DEMO</span><button class="icon-btn" id="openSettings" title="Настройки">⚙</button></div>
+      </header>
+
+      <section class="view active" id="view-planner">
+        <div class="hero-card product-hero">
+          <div class="hero-copy">
+            <span class="pill">VIBEPILOT</span>
+            <h2>Опишите задачу.<br><em>Агент соберёт кампанию.</em></h2>
+            <p>Три концепции → независимый выбор → баннер → QA → видео. Перед каждым платным шагом VibePilot проверяет цену и не выходит за заданный лимит.</p>
+            <div class="hero-points"><span>3 концепции</span><span>AI-отбор</span><span>баннер + видео</span><span>лимит расходов</span></div>
+          </div>
+          <div class="factory-visual" aria-hidden="true">
+            <div class="factory-node n1"><small>01</small><b>IDEAS</b><span>3 концепции</span></div>
+            <div class="factory-node n2"><small>02</small><b>PICK</b><span>лучший вариант</span></div>
+            <div class="factory-node n3"><small>03</small><b>CREATE</b><span>баннер</span></div>
+            <div class="factory-node n4"><small>04</small><b>QA</b><span>проверка</span></div>
+            <div class="factory-node n5"><small>05</small><b>MOTION</b><span>видео</span></div>
+          </div>
+        </div>
+
+        <div class="onboarding-strip">
+          <div><span>1</span><b>Задача</b><small>Что рекламируем и для кого</small></div>
+          <i>→</i><div><span>2</span><b>Результат</b><small>Баннер и видео</small></div>
+          <i>→</i><div><span>3</span><b>Бюджет</b><small>Жёсткий потолок расходов</small></div>
+          <i>→</i><div><span>4</span><b>Готово</b><small>Материалы + квитанция</small></div>
+        </div>
+
+        <div class="grid planner-grid">
+          <form class="panel form-panel" id="campaignForm">
+            <div class="panel-head"><div><span class="step-no">01</span><h3>Что нужно продвинуть?</h3></div><button type="button" class="text-btn" id="fillExample">Попробовать пример</button></div>
+            <label>Задача<textarea id="brief" minlength="20" maxlength="4000" required placeholder="Например: продвигаем новую кофейню у МГУ. ЦА — студенты 18–25 лет. Нужна яркая кампания для Telegram и VK, без неподтверждённых обещаний."></textarea><small><span id="briefCount">0</span>/4000</small></label>
+
+            <div class="result-choice">
+              <div><b>Что получить</b><small>VibePilot сам построит промежуточные этапы</small></div>
+              <label class="choice-card active"><input type="checkbox" id="bannerWanted" checked disabled><span>▣</span><b>Баннер</b><small>1:1 рекламный креатив</small></label>
+              <label class="choice-card active" id="videoChoice"><input id="video" type="checkbox" checked><span>▶</span><b>Видео</b><small>анимация выбранного креатива</small></label>
+            </div>
+
+            <div class="budget-block">
+              <label>Максимальный бюджет, ₽<input id="budget" type="number" min="10" max="50000" value="100" required></label>
+              <div class="budget-explain"><span><b id="usableBudget">95 ₽</b> на производство</span><span><b id="previewReserve">5 ₽</b> резерв</span></div>
+              <div class="meter"><i id="reserveMeter"></i></div>
+            </div>
+
+            <details class="advanced" id="advancedSettings">
+              <summary>Дополнительные настройки <span>для точного контроля</span></summary>
+              <div class="advanced-body">
+                <div class="field-row">
+                  <label>Резерв, ₽<input id="reserve" type="number" min="0" max="10000" value="5" required></label>
+                  <label>Спросить подтверждение от, ₽<input id="approval" type="number" min="1" max="50000" value="10" required></label>
+                </div>
+                <div class="field-row">
+                  <label>Допуск роста цены, ₽<input id="drift" type="number" min="0" max="10000" value="2" required></label>
+                  <fieldset><legend>Приоритет</legend><div class="segmented" id="priority"><button type="button" data-value="economy">Экономия</button><button type="button" class="selected" data-value="balanced">Баланс</button><button type="button" data-value="quality">Качество</button></div></fieldset>
+                </div>
+                <div class="switch-row live-row"><div><b>Live-режим</b><small>Реальные генерации и реальные списания в Vibe Marketolog</small></div><label class="switch"><input id="liveMode" type="checkbox"><span></span></label></div>
+              </div>
+            </details>
+
+            <div class="form-actions"><button type="button" class="btn secondary" id="compareBtn">Сравнить бюджеты</button><button class="btn primary big" type="submit"><span>Создать кампанию</span><b>→</b></button></div>
+            <p class="form-hint" id="formHint">Сначала будет рассчитана смета. Списание начнётся только после безопасной проверки.</p>
+          </form>
+
+          <aside class="panel preview-panel">
+            <div class="panel-head"><div><span class="step-no">02</span><h3>Что сделает агент</h3></div><span class="status-dot">5 этапов</span></div>
+            <div class="mini-pipeline">
+              <div><i>01</i><span><b>Придумает 3 концепции</b><small>разные рекламные направления</small></span><em>AI</em></div>
+              <div><i>02</i><span><b>Выберет сильнейшую</b><small>другая модель оценит идеи по рубрике</small></span><em>AI</em></div>
+              <div><i>03</i><span><b>Создаст баннер</b><small>по победившей концепции</small></span><em>IMG</em></div>
+              <div><i>04</i><span><b>Проведёт QA</b><small>проверит готовность перед видео</small></span><em>QA</em></div>
+              <div id="previewVideoStep"><i>05</i><span><b>Сделает видео</b><small>оживит одобренный креатив</small></span><em>VID</em></div>
+            </div>
+            <div class="metric-card accent"><small>Жёсткий лимит</small><strong><span id="previewBudget">100</span> ₽</strong><p>Ни один платный шаг не должен вывести кампанию выше лимита.</p></div>
+            <div class="notice">В demo-режиме показывается безопасный план без списаний. Для настоящих картинок и видео включите Live в дополнительных настройках.</div>
+          </aside>
+        </div>
+        <section class="panel results-panel hidden" id="comparisonPanel"><div class="panel-head"><div><span class="step-no">03</span><h3>Как меняется результат от бюджета</h3></div><button class="text-btn" id="closeCompare">Скрыть</button></div><div class="scenario-grid" id="scenarioGrid"></div></section>
+      </section>
+
+      <section class="view" id="view-workspace">
+        <div class="workspace-head panel">
+          <div><span class="pill" id="workflowStatus">НЕТ WORKFLOW</span><h2 id="workflowTitle">Создайте первую кампанию</h2><p id="workflowId">ID появится здесь</p></div>
+          <div class="workspace-actions"><button class="btn secondary" id="loadWorkflow">Открыть по ID</button><button class="btn primary" id="executeBtn" disabled>Продолжить</button></div>
+        </div>
+
+        <div class="production-progress panel">
+          <div class="production-progress-head"><div><b>Производство кампании</b><small id="autoStatus">Автообновление выключено</small></div><label class="tiny-switch"><input id="autoRefresh" type="checkbox" checked><span></span> авто</label></div>
+          <div class="stage-rail" id="stageRail"></div>
+        </div>
+
+        <div class="stats-grid"><div class="stat"><small>Лимит</small><strong id="statBudget">—</strong></div><div class="stat"><small>Потрачено</small><strong id="statSpent">—</strong></div><div class="stat"><small>Остаток</small><strong id="statRemaining">—</strong></div><div class="stat"><small>Сверка</small><strong id="statRecon">—</strong></div></div>
+
+        <div class="approval-banner hidden" id="approvalBanner"><div><span>!</span><div><b>Нужно ваше подтверждение</b><p id="approvalText">Следующий шаг дороже установленного порога.</p></div></div><div><button class="btn secondary" id="rejectBtn">Пропустить</button><button class="btn primary" id="approveBtn">Подтвердить и продолжить</button></div></div>
+
+        <section class="result-section panel" id="conceptsSection">
+          <div class="result-section-head"><div><span>01</span><div><h3>Концепции</h3><p>Три разных рекламных направления</p></div></div><span class="step-state" id="conceptsState">ожидает</span></div>
+          <div class="concept-grid placeholders" id="conceptCards"><div></div><div></div><div></div></div>
+        </section>
+
+        <section class="result-section panel" id="selectionSection">
+          <div class="result-section-head"><div><span>02</span><div><h3>AI-отбор</h3><p>Независимая модель выбирает сильнейшую идею</p></div></div><span class="step-state" id="selectionState">ожидает</span></div>
+          <div class="winner-empty" id="winnerCard">Победитель появится после оценки концепций.</div>
+        </section>
+
+        <section class="result-section panel" id="bannerSection">
+          <div class="result-section-head"><div><span>03</span><div><h3>Баннер</h3><p>Готовый визуал победившей концепции</p></div></div><span class="step-state" id="bannerState">ожидает</span></div>
+          <div class="media-stage" id="bannerMedia"><div class="media-placeholder"><b>▣</b><span>Изображение появится здесь</span></div></div>
+        </section>
+
+        <section class="result-section panel" id="qaSection">
+          <div class="result-section-head"><div><span>04</span><div><h3>QA-проверка</h3><p>Контроль результата перед дорогим видео-шагом</p></div></div><span class="step-state" id="qaState">ожидает</span></div>
+          <div class="qa-empty" id="qaCard"><span>◎</span><div><b>Проверка ещё не запущена</b><p>После баннера здесь появятся проверки и решение: продолжать, исправить или остановиться.</p></div></div>
+        </section>
+
+        <section class="result-section panel" id="videoSection">
+          <div class="result-section-head"><div><span>05</span><div><h3>Видео</h3><p>Короткая адаптация одобренного баннера</p></div></div><span class="step-state" id="videoState">ожидает</span></div>
+          <div class="media-stage video-stage" id="videoMedia"><div class="media-placeholder"><b>▶</b><span>Видео появится здесь</span></div></div>
+        </section>
+
+        <section class="campaign-summary panel hidden" id="campaignSummary">
+          <div><span class="success-icon">✓</span><div><p class="eyebrow">CAMPAIGN COMPLETE</p><h2>Кампания готова</h2><p id="summaryLine">Результаты собраны без превышения бюджета.</p></div></div>
+          <div class="summary-actions"><button class="btn secondary" id="reconcileBtn">Сверить расходы</button><button class="btn primary" id="receiptBtn">Открыть квитанцию</button></div>
+        </section>
+
+        <details class="panel tech-details"><summary>Технические детали workflow</summary><div class="workspace-grid"><section><div class="panel-head"><h3>Шаги и стоимость</h3><button class="text-btn" id="refreshBtn" disabled>Обновить</button></div><div class="timeline empty" id="stepsTimeline"><p>Workflow ещё не создан.</p></div></section><aside><div class="audit-mini" id="auditMini"><b>Последнее событие</b><p>Workflow ещё не создан.</p></div></aside></div></details>
+      </section>
+
+      <section class="view" id="view-receipt"><div class="receipt-layout"><section class="panel receipt-card"><div class="receipt-top"><div class="brand compact"><span class="brand-mark"><span></span><span></span></span><span><b>Vibe</b>Pilot</span></div><span id="receiptVerifyBadge" class="pill muted">НЕТ ДАННЫХ</span></div><h2>Execution Receipt</h2><p class="mono" id="receiptWorkflow">workflow_id: —</p><div class="receipt-summary"><div><small>Режим</small><b id="receiptMode">—</b></div><div><small>Статус</small><b id="receiptStatus">—</b></div><div><small>Net spend</small><b id="receiptSpend">—</b></div></div><div class="signature-box"><small>INTEGRITY DIGEST</small><code id="receiptDigest">Квитанция появится после создания workflow</code></div><button class="btn primary full" id="verifyBtn" disabled>Проверить подпись</button></section><section class="panel json-panel"><div class="panel-head"><h3>Receipt JSON</h3><button class="text-btn" id="copyReceipt">Копировать</button></div><pre id="receiptJson">{}</pre></section></div></section>
+
+      <section class="view" id="view-settings"><div class="settings-wrap"><section class="panel"><div class="panel-head"><div><span class="step-no">API</span><h3>Подключение</h3></div></div><label>Адрес бэкенда<input id="apiBase" type="url" value="https://vibepilot-backend.onrender.com"></label><label>Live control key<input id="liveKey" type="password" placeholder="X-VibePilot-Live-Key"></label><div class="notice warning">Ключ нужен только для live-операций VibePilot. Он хранится в sessionStorage текущей вкладки и не записывается в исходники.</div><div class="form-actions"><button class="btn secondary" id="testConnection">Проверить соединение</button><button class="btn primary" id="saveSettings">Сохранить</button></div></section><aside class="panel"><h3>Состояние сервера</h3><div class="server-info" id="serverInfo"><p>Нажмите «Проверить соединение».</p></div></aside></div></section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <div class="modal-backdrop" id="idModal"><div class="modal"><button class="modal-close">×</button><h3>Открыть workflow</h3><p>Введите ID ранее созданного запуска.</p><input id="workflowIdInput" placeholder="wf_..."><button class="btn primary full" id="confirmLoad">Открыть</button></div></div>
+
+  <div class="modal-backdrop onboarding-modal" id="onboardingModal">
+    <div class="onboarding-card">
+      <button class="modal-close" id="closeOnboarding">×</button>
+      <span class="pill">60 СЕКУНД ДО ПЕРВОЙ КАМПАНИИ</span>
+      <h2>VibePilot делает не один креатив.<br>Он ведёт весь мини-продакшн.</h2>
+      <div class="onboarding-flow">
+        <div><span>✦</span><b>Концепции</b><small>три разных идеи</small></div><i>→</i>
+        <div><span>◎</span><b>Отбор</b><small>независимая оценка</small></div><i>→</i>
+        <div><span>▣</span><b>Баннер</b><small>готовый visual</small></div><i>→</i>
+        <div><span>✓</span><b>QA</b><small>контроль качества</small></div><i>→</i>
+        <div><span>▶</span><b>Видео</b><small>финальная адаптация</small></div>
+      </div>
+      <div class="onboarding-bottom"><p>Вы задаёте только задачу и максимум расходов. Перед каждым платным вызовом цена перепроверяется.</p><button class="btn primary big" id="startOnboarding">Понятно, создать кампанию →</button></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

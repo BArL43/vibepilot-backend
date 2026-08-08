@@ -6,6 +6,7 @@ import json
 import re
 import time
 import uuid
+from pathlib import Path
 from asyncio import Lock
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.contracts import (
@@ -45,7 +47,7 @@ from app.receipts import ReceiptSigner, verify_signed_receipt
 from app.store import StateStore, StoreConflict
 from app.vibe_client import VibeAPIError, VibeClient, VibeResponse
 
-API_VERSION = "0.3.1"
+API_VERSION = "0.4.0"
 SETTINGS = Settings.from_env()
 STATE_STORE = StateStore(SETTINGS.database_url)
 RECEIPT_SIGNER = ReceiptSigner(SETTINGS.receipt_signing_key)
@@ -66,6 +68,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+if WEB_DIR.exists():
+    app.mount("/app", StaticFiles(directory=WEB_DIR, html=True), name="vibepilot-ui")
 
 
 def _utcnow() -> datetime:
@@ -671,7 +677,7 @@ def _record_generation_result(step: Step, response: VibeResponse) -> None:
     text = data.get("text") or data.get("text_content")
     if isinstance(text, str):
         step.text_result = text
-        if step.id == "selection":
+        if step.id in {"concepts", "selection"}:
             candidate = text.strip()
             if candidate.startswith("```"):
                 candidate = candidate.removeprefix("```json").removeprefix("```")
@@ -682,12 +688,16 @@ def _record_generation_result(step: Step, response: VibeResponse) -> None:
                 structured = None
             if isinstance(structured, dict):
                 step.structured_result = structured
-    display_url = data.get("display_url") or data.get("result_url")
-    if isinstance(display_url, str):
-        step.result_url = display_url
     result_urls = data.get("result_urls")
     if isinstance(result_urls, list):
         step.result_urls = [str(url) for url in result_urls]
+    primary_url = data.get("result_url")
+    if not isinstance(primary_url, str) and step.result_urls:
+        primary_url = step.result_urls[0]
+    if not isinstance(primary_url, str):
+        primary_url = data.get("display_url")
+    if isinstance(primary_url, str):
+        step.result_url = primary_url
 
 
 def _sync_workflow_balance(workflow: Workflow, data: dict[str, Any]) -> None:
@@ -743,6 +753,56 @@ async def _reconcile_balance(workflow: Workflow, client: VibeClient) -> None:
     )
 
 
+def _banner_qa_report(workflow: Workflow) -> dict[str, Any]:
+    """Fail-closed QA before video without adding another paid model call."""
+    banner = next((item for item in workflow.steps if item.id == "banner"), None)
+    selection = next((item for item in workflow.steps if item.id == "selection"), None)
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, passed: bool, detail: str) -> None:
+        checks.append({"name": name, "passed": passed, "detail": detail})
+
+    add(
+        "banner_complete",
+        bool(banner and banner.status == "complete"),
+        "Провайдер подтвердил завершение генерации баннера.",
+    )
+    add(
+        "media_url",
+        bool(banner and banner.result_url and str(banner.result_url).startswith("https://")),
+        "У результата есть HTTPS URL для следующего шага.",
+    )
+    add(
+        "generation_provenance",
+        bool(banner and banner.generation_id),
+        "Сохранён реальный generation_id VibeMarketolog.",
+    )
+    add(
+        "creative_decision",
+        bool(selection and (selection.structured_result or selection.text_result)),
+        "Баннер связан с результатом независимого AI-отбора.",
+    )
+    add(
+        "budget_envelope",
+        workflow.actual_spend_rub <= workflow.budget_rub - workflow.reserve_rub,
+        "Фактический расход после баннера остаётся внутри безопасного конверта.",
+    )
+    passed = all(bool(item["passed"]) for item in checks)
+    score = round(100 * sum(bool(item["passed"]) for item in checks) / len(checks))
+    return {
+        "qa_version": 1,
+        "passed": passed,
+        "score": score,
+        "decision": "continue" if passed else "stop",
+        "summary": (
+            "Баннер готов, происхождение результата и бюджет проверены. Можно переходить к видео."
+            if passed
+            else "QA остановил workflow: один или несколько обязательных инвариантов не выполнены."
+        ),
+        "checks": checks,
+    }
+
+
 async def _advance_live(workflow: Workflow, client: VibeClient) -> Workflow:
     if not _settings().vibe_api_token:
         workflow.status = "blocked"
@@ -773,6 +833,30 @@ async def _advance_live(workflow: Workflow, client: VibeClient) -> Workflow:
             _save(workflow)
             return deepcopy(workflow)
         if step.kind == "guard":
+            if step.id == "preflight":
+                qa_report = _banner_qa_report(workflow)
+                step.structured_result = qa_report
+                if not qa_report["passed"]:
+                    step.status = "blocked"
+                    step.error_code = "banner_qa_failed"
+                    step.error_message = str(qa_report["summary"])
+                    workflow.status = "blocked"
+                    _audit(
+                        workflow,
+                        "banner_qa_failed",
+                        step=step,
+                        score=qa_report["score"],
+                        checks=qa_report["checks"],
+                    )
+                    _save(workflow)
+                    return deepcopy(workflow)
+                _audit(
+                    workflow,
+                    "banner_qa_passed",
+                    step=step,
+                    score=qa_report["score"],
+                    checks=qa_report["checks"],
+                )
             next_step = next(
                 (
                     candidate
@@ -1008,6 +1092,7 @@ def root() -> dict[str, str]:
         "version": API_VERSION,
         "docs": "/docs",
         "health": "/health",
+        "ui": "/app/",
     }
 
 
