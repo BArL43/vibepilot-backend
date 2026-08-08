@@ -14,7 +14,12 @@ function headers(json=false){const h={};if(json)h['Content-Type']='application/j
 async function api(path,opt={}){
   const r=await fetch(`${state.api.replace(/\/$/,'')}${path}`,{...opt,headers:{...headers(!!opt.body),...(opt.headers||{})}});
   let data={};try{data=await r.json()}catch{}
-  if(!r.ok){const d=data.detail||data;throw new Error(typeof d==='string'?d:(d.message||d.code||`HTTP ${r.status}`))}
+  if(!r.ok){
+    const d=data.detail||data;
+    const err=new Error(typeof d==='string'?d:(d.message||d.code||`HTTP ${r.status}`));
+    if(d&&typeof d==='object'){err.code=d.code||d.upstream_code||'';err.settingsUrl=d.settings_url||'';}
+    throw err;
+  }
   return data;
 }
 function switchView(name){
@@ -64,7 +69,12 @@ $('#campaignForm').onsubmit=async e=>{
     state.workflow=await api(`/api/v1/contracts/${state.contract.id}/activate`,{method:'POST'});
     renderWorkflow();switchView('workspace');toast(`Кампания ${state.workflow.id} создана`);
     await executeCurrent(true);
-  }catch(err){toast(err.message,true)}finally{btn.disabled=false;btn.querySelector('span').textContent='Создать кампанию'}
+  }catch(err){
+    if(err.code==='daily_spend_limit_exceeded'){
+      toast(`${err.message} Откройте «Подключение» → «Изменить лимит в ЛК».`,true);
+      switchView('settings');checkHealth();
+    }else toast(err.message,true);
+  }finally{btn.disabled=false;btn.querySelector('span').textContent='Создать кампанию'}
 };
 
 function getStep(id){return state.workflow?.steps?.find(s=>s.id===id)}
@@ -168,7 +178,36 @@ $('#confirmLoad').onclick=async()=>{try{state.workflow=await api(`/api/v1/workfl
 
 $('#apiBase').value=state.api;$('#liveKey').value=state.key;
 $('#saveSettings').onclick=()=>{state.api=$('#apiBase').value.trim().replace(/\/$/,'');state.key=$('#liveKey').value.trim();sessionStorage.setItem('vp_api',state.api);sessionStorage.setItem('vp_key',state.key);toast('Настройки сохранены');checkHealth()};$('#testConnection').onclick=checkHealth;
-async function checkHealth(){try{const h=await api('/health');$('#apiDot').className='ok';$('#apiLabel').textContent='API подключён';$('#apiMeta').textContent=`v${h.version} · ${h.state_store}`;$('#serverInfo').innerHTML=Object.entries(h).map(([k,v])=>`<p><b>${esc(k)}</b><br>${esc(String(v))}</p>`).join('');return h}catch(e){$('#apiDot').className='bad';$('#apiLabel').textContent='API недоступен';$('#apiMeta').textContent=e.message;$('#serverInfo').innerHTML=`<p>${esc(e.message)}</p>`}}
+function renderProviderLimit(info){
+  const card=$('#providerLimitCard'),value=$('#dailyLimitValue'),meta=$('#dailyLimitMeta'),meter=$('#dailyLimitMeter');
+  if(!card||!value||!meta||!meter)return;
+  const d=info?.daily_spend;
+  if(!d||d==='redacted'){
+    value.textContent='—';meta.textContent=state.key?'Лимит не передан провайдером.':'Сохраните Live control key, чтобы увидеть лимит и остаток.';meter.style.width='0%';return;
+  }
+  const limit=Number(d.limit_rub),spent=Number(d.spent_rub),remaining=Number(d.remaining_rub);
+  value.textContent=Number.isFinite(limit)?money(limit):'—';
+  const hasSpent=Number.isFinite(spent),hasRemaining=Number.isFinite(remaining);
+  meta.textContent=[
+    hasSpent?`Потрачено сегодня: ${money(spent)}`:null,
+    hasRemaining?`Доступно: ${money(remaining)}`:null
+  ].filter(Boolean).join(' · ')||'VibeMarketolog не вернул детализацию расхода.';
+  meter.style.width=Number.isFinite(limit)&&limit>0&&hasSpent?`${Math.max(0,Math.min(100,spent/limit*100))}%`:'0%';
+}
+async function checkHealth(){
+  try{
+    const h=await api('/health');
+    $('#apiDot').className='ok';$('#apiLabel').textContent='API подключён';$('#apiMeta').textContent=`v${h.version} · ${h.state_store}`;
+    $('#serverInfo').innerHTML=Object.entries(h).map(([k,v])=>`<p><b>${esc(k)}</b><br>${esc(String(v))}</p>`).join('');
+    if(state.key){
+      try{renderProviderLimit(await api('/api/v1/integrations/vibe/health'))}
+      catch{renderProviderLimit(null)}
+    }else renderProviderLimit(null);
+    return h;
+  }catch(e){
+    $('#apiDot').className='bad';$('#apiLabel').textContent='API недоступен';$('#apiMeta').textContent=e.message;$('#serverInfo').innerHTML=`<p>${esc(e.message)}</p>`;renderProviderLimit(null);
+  }
+}
 
 function showOnboarding(force=false){if(force||!localStorage.getItem('vp_onboarded'))$('#onboardingModal').classList.add('show')}
 function closeOnboarding(){localStorage.setItem('vp_onboarded','1');$('#onboardingModal').classList.remove('show')}

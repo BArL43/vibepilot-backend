@@ -47,7 +47,7 @@ from app.receipts import ReceiptSigner, verify_signed_receipt
 from app.store import StateStore, StoreConflict
 from app.vibe_client import VibeAPIError, VibeClient, VibeResponse
 
-API_VERSION = "0.4.0"
+API_VERSION = "0.4.1"
 SETTINGS = Settings.from_env()
 STATE_STORE = StateStore(SETTINGS.database_url)
 RECEIPT_SIGNER = ReceiptSigner(SETTINGS.receipt_signing_key)
@@ -229,6 +229,62 @@ def _extract_balance(payload: dict[str, Any]) -> float | None:
     return None
 
 
+def _numeric_field(payload: dict[str, Any], names: tuple[str, ...]) -> float | None:
+    sources: list[dict[str, Any]] = [payload]
+    for key in ("limits", "usage", "spend", "billing", "quota"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+    for source in sources:
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return round(float(value), 2)
+    return None
+
+
+def _daily_spend_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    limit = _numeric_field(
+        payload,
+        (
+            "daily_spend_limit",
+            "daily_limit",
+            "daily_spend_limit_rub",
+            "spend_limit_daily",
+        ),
+    )
+    spent = _numeric_field(
+        payload,
+        (
+            "daily_spend",
+            "daily_spent",
+            "daily_spend_used",
+            "spent_today",
+            "today_spend",
+        ),
+    )
+    remaining = _numeric_field(
+        payload,
+        (
+            "daily_spend_remaining",
+            "daily_remaining",
+            "remaining_today",
+            "daily_limit_remaining",
+        ),
+    )
+    if remaining is None and limit is not None and spent is not None:
+        remaining = round(max(0, limit - spent), 2)
+    if spent is None and limit is not None and remaining is not None:
+        spent = round(max(0, limit - remaining), 2)
+    return {
+        "limit_rub": limit,
+        "spent_rub": spent,
+        "remaining_rub": remaining,
+        "managed_in": "VibeMarketolog token settings",
+        "settings_url": "https://lk.vibemarketolog.ru/#agent",
+    }
+
+
 def _recompute_costs(workflow: Workflow) -> None:
     workflow.actual_spend_rub = round(
         sum(step.actual_cost_rub for step in workflow.steps), 2
@@ -256,16 +312,30 @@ def _idempotency_key(workflow: Workflow, step: Step, fingerprint: str) -> str:
 
 
 def _upstream_error_response(exc: VibeAPIError) -> JSONResponse:
+    daily_limit = exc.code == "daily_spend_limit_exceeded"
     return JSONResponse(
-        status_code=502,
+        status_code=429 if daily_limit else 502,
         content={
             "detail": {
-                "code": "vibe_upstream_error",
+                "code": (
+                    "daily_spend_limit_exceeded"
+                    if daily_limit
+                    else "vibe_upstream_error"
+                ),
                 "upstream_status": exc.status_code,
                 "upstream_code": exc.code,
-                "message": exc.message,
+                "message": (
+                    "Достигнут дневной лимит расходов VibeMarketolog. "
+                    "Измените лимит в настройках API-токена или продолжите "
+                    "после его сброса."
+                    if daily_limit
+                    else exc.message
+                ),
                 "request_id": exc.request_id,
                 "retry_after": exc.retry_after,
+                "settings_url": (
+                    "https://lk.vibemarketolog.ru/#agent" if daily_limit else None
+                ),
             }
         },
     )
@@ -278,13 +348,29 @@ async def vibe_error_handler(_: object, exc: VibeAPIError) -> JSONResponse:
 
 @app.exception_handler(CatalogError)
 async def catalog_error_handler(_: object, exc: CatalogError) -> JSONResponse:
+    message = str(exc)
+    daily_limit = "daily_spend_limit" in message
     return JSONResponse(
-        status_code=422,
+        status_code=429 if daily_limit else 422,
         content={
             "detail": {
-                "code": "runtime_validation_rejected",
-                "message": str(exc),
+                "code": (
+                    "daily_spend_limit_exceeded"
+                    if daily_limit
+                    else "runtime_validation_rejected"
+                ),
+                "message": (
+                    "Следующий шаг превысит дневной лимит VibeMarketolog. "
+                    "Списание не произошло. Измените лимит в настройках "
+                    "API-токена или уменьшите объём кампании."
+                    if daily_limit
+                    else message
+                ),
                 "failed_action_charged_rub": 0,
+                "provider_message": message if daily_limit else None,
+                "settings_url": (
+                    "https://lk.vibemarketolog.ru/#agent" if daily_limit else None
+                ),
             }
         },
     )
@@ -1160,6 +1246,11 @@ async def vibe_health(
         else "redacted",
         "model_count": model_count,
         "scopes": me.data.get("scopes") or me.data.get("granted"),
+        "daily_spend": (
+            _daily_spend_snapshot(me.data)
+            if _has_live_access(x_vibepilot_live_key)
+            else "redacted"
+        ),
         "request_ids": [
             request_id
             for request_id in (
