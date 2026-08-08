@@ -6,13 +6,13 @@ import json
 import re
 import time
 import uuid
-from pathlib import Path
 from asyncio import Lock
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -769,7 +769,11 @@ def _banner_qa_report(workflow: Workflow) -> dict[str, Any]:
     )
     add(
         "media_url",
-        bool(banner and banner.result_url and str(banner.result_url).startswith("https://")),
+        bool(
+            banner
+            and banner.result_url
+            and str(banner.result_url).startswith("https://")
+        ),
         "У результата есть HTTPS URL для следующего шага.",
     )
     add(
@@ -795,9 +799,15 @@ def _banner_qa_report(workflow: Workflow) -> dict[str, Any]:
         "score": score,
         "decision": "continue" if passed else "stop",
         "summary": (
-            "Баннер готов, происхождение результата и бюджет проверены. Можно переходить к видео."
+            (
+                "Баннер готов, происхождение результата и бюджет проверены. "
+                "Можно переходить к видео."
+            )
             if passed
-            else "QA остановил workflow: один или несколько обязательных инвариантов не выполнены."
+            else (
+                "QA остановил workflow: один или несколько обязательных "
+                "инвариантов не выполнены."
+            )
         ),
         "checks": checks,
     }
