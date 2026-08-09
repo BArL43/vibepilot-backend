@@ -15,7 +15,7 @@ from app.v060 import (
     creative_package,
 )
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 # Keep the battle-tested v0.5 engine and replace only its planner entry points.
 core.build_steps = build_steps_v060
@@ -58,8 +58,66 @@ def product() -> dict[str, Any]:
             "budget_booster",
             "signed_receipts",
             "operator_frontend",
+            "campaign_history",
         ],
         "ui": "/pilot",
+    }
+
+
+@app.get("/api/v1/campaigns")
+def list_campaigns(
+    limit: int = 50,
+    x_vibepilot_live_key: str | None = Header(
+        default=None,
+        alias="X-VibePilot-Live-Key",
+    ),
+) -> dict[str, Any]:
+    # Campaign history can contain private briefs, spend and media metadata.
+    core._require_live_access(x_vibepilot_live_key)
+
+    workflows = core._store().list_workflows(limit=limit)
+    items = []
+    for workflow in workflows:
+        banner = next(
+            (
+                step
+                for step in workflow.steps
+                if step.id in {"banner", "bonus_banner"} and step.result_url
+            ),
+            None,
+        )
+        video = next(
+            (step for step in workflow.steps if step.id == "video" and step.result_url),
+            None,
+        )
+        items.append(
+            {
+                "id": workflow.id,
+                "brief": workflow.brief,
+                "status": workflow.status,
+                "mode": workflow.mode,
+                "priority": workflow.priority,
+                "budget_rub": workflow.budget_rub,
+                "actual_spend_rub": workflow.actual_spend_rub,
+                "refunded_rub": workflow.refunded_rub,
+                "net_spend_rub": round(
+                    workflow.actual_spend_rub - workflow.refunded_rub,
+                    2,
+                ),
+                "remaining_budget_rub": workflow.remaining_budget_rub,
+                "reserve_rub": workflow.reserve_rub,
+                "execution_verified": workflow.execution_verified,
+                "has_banner": banner is not None,
+                "has_video": video is not None,
+                "created_at": workflow.created_at,
+                "updated_at": workflow.updated_at,
+            }
+        )
+
+    return {
+        "items": items,
+        "count": len(items),
+        "limit": max(1, min(int(limit), 200)),
     }
 
 

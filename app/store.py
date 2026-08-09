@@ -143,6 +143,19 @@ class StateStore:
             ).scalar_one_or_none()
         return Workflow.model_validate_json(payload) if payload else None
 
+    def list_workflows(self, limit: int = 50) -> list[Workflow]:
+        safe_limit = max(1, min(int(limit), 200))
+        with self.engine.connect() as connection:
+            payloads = (
+                connection.execute(select(self.workflows.c.payload)).scalars().all()
+            )
+
+        workflows = [
+            Workflow.model_validate_json(payload) for payload in payloads if payload
+        ]
+        workflows.sort(key=lambda item: item.updated_at, reverse=True)
+        return workflows[:safe_limit]
+
     def workflow_count(self) -> int:
         with self.engine.connect() as connection:
             return len(connection.execute(select(self.workflows.c.id)).all())
