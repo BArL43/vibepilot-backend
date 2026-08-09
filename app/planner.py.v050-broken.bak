@@ -121,13 +121,19 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
             "z-image",
         ]
     elif request.priority == "balanced":
-        image_preferences = ["nano-banana-2-lite", "z-image"]
+        image_preferences = [
+            "seedream-5-pro",
+            "nano-banana-2-2k",
+            "gpt-image-2",
+            "nano-banana-2-lite",
+            "z-image",
+        ]
     else:
-        image_preferences = ["z-image", "nano-banana-2-lite"]
+        image_preferences = ["z-image", "nano-banana-2-lite", "nano-banana-2-2k"]
     image_model, image_spec = _preferred(images, "image", image_preferences)
     image_cost = _catalog_cost("image", image_spec)
 
-    text_tokens = {"economy": 350, "balanced": 600, "quality": 1200}[request.priority]
+    text_tokens = {"economy": 350, "balanced": 800, "quality": 1200}[request.priority]
     steps = [
         Step(
             id="concepts",
@@ -252,7 +258,6 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
     if request.include_video:
         if not videos:
             raise CatalogError("/capabilities has no usable video catalog")
-
         if request.priority == "quality":
             video_preferences = [
                 "veo3_fast",
@@ -261,6 +266,13 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
                 "pixverse-v6",
                 "grok-ttv",
             ]
+        elif request.priority == "balanced":
+            video_preferences = [
+                "seedance-2-mini",
+                "veo3_fast",
+                "pixverse-v6",
+                "grok-ttv",
+            ]
         else:
             video_preferences = [
                 "pixverse-v6",
@@ -269,58 +281,40 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
                 "grok-ttv",
             ]
 
-        video_model, video_spec = _preferred(
-            videos,
-            "video",
-            video_preferences,
-        )
-
+        video_model, video_spec = _preferred(videos, "video", video_preferences)
         tiers = video_spec.get("tiers")
         if isinstance(tiers, list) and tiers and isinstance(tiers[0], str):
+            preferred_tier = None
             if request.priority == "quality":
-                preferred_tier = next(
-                    (
-                        item
-                        for item in tiers
-                        if isinstance(item, str)
-                        and any(
-                            token in item.lower()
-                            for token in ("pro", "hd", "720", "1080")
-                        )
-                    ),
-                    None,
-                )
-                video_model = preferred_tier or tiers[0]
-            else:
-                video_model = tiers[0]
+                for candidate in tiers:
+                    if isinstance(candidate, str) and (
+                        "pro" in candidate.lower()
+                        or "hd" in candidate.lower()
+                        or "720" in candidate.lower()
+                        or "1080" in candidate.lower()
+                    ):
+                        preferred_tier = candidate
+                        break
+            video_model = preferred_tier or tiers[0]
 
-        if request.priority == "quality":
-            video_prompt = (
+        video_payload: dict[str, Any] = {
+            "type": "video",
+            "model": video_model,
+            "prompt": (
                 "Создай законченный короткий рекламный ролик по готовому баннеру: "
                 "есть завязка, основное действие и понятный завершающий кадр. "
                 "Движение камеры плавное, визуал рекламный, без визуального шума, "
                 "минимум мелкого текста, понятный смысл за один просмотр. "
                 f"Бизнес-бриф: {request.brief}"
-            )
-        else:
-            video_prompt = (
-                "Короткая спокойная видеоадаптация рекламной концепции без "
-                f"мелкого текста. Бизнес-бриф: {request.brief}"
-            )
-
-        video_payload: dict[str, Any] = {
-            "type": "video",
-            "model": video_model,
-            "prompt": video_prompt,
+            ),
             "strict": True,
         }
-
         if video_model == "pixverse-v6":
             video_payload.update(
                 {
                     "pv_mode": "text",
-                    "duration": 6 if request.priority == "quality" else 3,
-                    "resolution": "720p" if request.priority == "quality" else "360p",
+                    "duration": (6 if request.priority == "quality" else 4),
+                    "resolution": ("720p" if request.priority == "quality" else "540p"),
                     "aspect_ratio": "1:1",
                     "generate_audio": False,
                 }
@@ -328,14 +322,18 @@ def build_steps(catalog: dict[str, Any], request: CampaignRequest) -> list[Step]
         elif video_model == "seedance-2-mini":
             video_payload.update(
                 {
-                    "duration": 8 if request.priority == "quality" else 4,
-                    "resolution": "720p" if request.priority == "quality" else "480p",
+                    "duration": (8 if request.priority == "quality" else 6),
+                    "resolution": ("720p" if request.priority == "quality" else "540p"),
                     "aspect_ratio": "1:1",
                 }
             )
         elif video_model.startswith("veo3"):
             video_payload.update(
-                {"duration": 8, "resolution": "720p", "aspect_ratio": "1:1"}
+                {
+                    "duration": (8 if request.priority == "quality" else 6),
+                    "resolution": "720p",
+                    "aspect_ratio": "1:1",
+                }
             )
 
         video_cost = _catalog_cost("video", video_spec)

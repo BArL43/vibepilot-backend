@@ -47,7 +47,7 @@ from app.receipts import ReceiptSigner, verify_signed_receipt
 from app.store import StateStore, StoreConflict
 from app.vibe_client import VibeAPIError, VibeClient, VibeResponse
 
-API_VERSION = "0.4.1"
+API_VERSION = "0.5.0"
 SETTINGS = Settings.from_env()
 STATE_STORE = StateStore(SETTINGS.database_url)
 RECEIPT_SIGNER = ReceiptSigner(SETTINGS.receipt_signing_key)
