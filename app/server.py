@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import contracts as contracts_module
 from app import main as core
@@ -15,7 +15,7 @@ from app.v060 import (
     creative_package,
 )
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 # Keep the battle-tested v0.5 engine and replace only its planner entry points.
 core.build_steps = build_steps_v060
@@ -35,15 +35,22 @@ def _authorized_workflow(
     return workflow
 
 
-@app.get("/pilot", response_class=HTMLResponse, include_in_schema=False)
-def pilot() -> HTMLResponse:
-    html = Path(__file__).with_name("pilot.html").read_text(encoding="utf-8")
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def home() -> HTMLResponse:
+    html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text(
+        encoding="utf-8"
+    )
     return HTMLResponse(html)
 
 
-@app.get("/pilot/", response_class=HTMLResponse, include_in_schema=False)
-def pilot_slash() -> HTMLResponse:
-    return pilot()
+@app.get("/pilot", include_in_schema=False)
+def pilot() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=307)
+
+
+@app.get("/pilot/", include_in_schema=False)
+def pilot_slash() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=307)
 
 
 @app.get("/api/v1/product")
@@ -59,8 +66,9 @@ def product() -> dict[str, Any]:
             "signed_receipts",
             "operator_frontend",
             "campaign_history",
+            "canonical_frontend",
         ],
-        "ui": "/pilot",
+        "ui": "/",
     }
 
 

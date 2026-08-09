@@ -1,9 +1,9 @@
 const $=(s)=>document.querySelector(s), $$=(s)=>[...document.querySelectorAll(s)];
-const defaultApi=location.pathname.startsWith('/app')?location.origin:'https://vibepilot-backend.onrender.com';
+const defaultApi=location.origin;
 const state={
   api:sessionStorage.getItem('vp_api')||defaultApi,
   key:sessionStorage.getItem('vp_key')||'', priority:'balanced', contract:null, workflow:null, receipt:null,
-  pollTimer:null, pollBusy:false
+  history:[], booster:null, pollTimer:null, pollBusy:false
 };
 const money=v=>`${Number(v??0).toLocaleString('ru-RU',{maximumFractionDigits:2})} ₽`;
 const terminal=new Set(['complete','cancelled','blocked','error']);
@@ -25,10 +25,10 @@ async function api(path,opt={}){
 function switchView(name){
   $$('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${name}`));
   $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
-  const titles={planner:'Кампания от идеи до видео',workspace:'Производство кампании',receipt:'Проверяемая квитанция',settings:'Подключение к API'};
+  const titles={planner:'Кампания от идеи до видео',workspace:'Производство кампании',history:'История кампаний',receipt:'Проверяемая квитанция',settings:'Подключение к API'};
   $('#pageTitle').textContent=titles[name];window.scrollTo({top:0,behavior:'smooth'});
 }
-$$('.nav-item').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$('#openSettings').onclick=()=>switchView('settings');
+$$('.nav-item').forEach(b=>b.onclick=()=>{switchView(b.dataset.view);if(b.dataset.view==='history')loadHistory()});$('#openSettings').onclick=()=>switchView('settings');
 
 function syncForm(){
   const b=Number($('#budget').value||0),r=Number($('#reserve').value||0),video=$('#video').checked;
@@ -67,7 +67,7 @@ $('#campaignForm').onsubmit=async e=>{
     state.contract=await api('/api/v1/contracts/compile',{method:'POST',body:JSON.stringify(payload([Number($('#budget').value)]))});
     btn.querySelector('span').textContent='Активируем…';
     state.workflow=await api(`/api/v1/contracts/${state.contract.id}/activate`,{method:'POST'});
-    renderWorkflow();switchView('workspace');toast(`Кампания ${state.workflow.id} создана`);
+    renderWorkflow();switchView('workspace');toast(`Кампания ${state.workflow.id} создана`);if(state.key)loadHistory();
     await executeCurrent(true);
   }catch(err){
     if(err.code==='daily_spend_limit_exceeded'){
@@ -106,9 +106,24 @@ function renderSelection(){
   box.className='winner-card';box.innerHTML=`<div class="winner-main"><span class="pick-label">AI CREATIVE DIRECTOR PICK</span><h4>${esc(winner)}</h4><p>${esc(reason)}</p>${d.banner_prompt?`<small>Визуальное направление: ${esc(d.banner_prompt)}</small>`:''}</div><div class="rubric-list">${metrics.map(([n,v])=>`<div class="rubric-line"><span>${n}</span><b>${Number(v||0)}/10</b><i style="--score:${Math.max(0,Math.min(100,Number(v||0)*10))}%"></i></div>`).join('')}</div>`;
 }
 function mediaUrl(step){return step?.result_url||step?.result_urls?.[0]||null}
+function creativeCopy(){
+  const d=selectionData(getStep('selection')),c=d?.copy;
+  if(c&&typeof c==='object')return{
+    headline:String(c.headline||'').trim(),
+    subheadline:String(c.subheadline||'').trim(),
+    offer:String(c.offer||'').trim(),
+    cta:String(c.cta||'').trim()
+  };
+  return{headline:'',subheadline:'',offer:'',cta:''};
+}
+function copyOverlay(){
+  const c=creativeCopy();
+  if(!c.headline&&!c.subheadline&&!c.offer&&!c.cta)return'';
+  return `<div class="det-copy"><div>${c.headline?`<h4>${esc(c.headline)}</h4>`:''}${c.subheadline?`<p>${esc(c.subheadline)}</p>`:''}${c.offer?`<span>${esc(c.offer)}</span>`:''}${c.cta?`<b>${esc(c.cta)}</b>`:''}</div></div>`;
+}
 function renderBanner(){
   const step=getStep('banner');setStepState('banner',step);const box=$('#bannerMedia'),url=mediaUrl(step);
-  if(url){box.className='media-stage with-meta';box.innerHTML=`<img src="${esc(url)}" alt="Сгенерированный рекламный баннер" loading="lazy"><div class="media-meta"><span>${esc(step.model)}</span><span>${money(step.actual_cost_rub||step.estimated_cost_rub)}</span><a href="${esc(url)}" target="_blank" rel="noopener">Открыть оригинал ↗</a></div>`;return}
+  if(url){box.className='media-stage with-meta text-safe-media';box.innerHTML=`<div class="creative-visual"><img src="${esc(url)}" alt="Сгенерированный рекламный visual" loading="lazy">${copyOverlay()}</div><div class="media-meta"><span>${esc(step.model)} · text-safe</span><span>${money(step.actual_cost_rub||step.estimated_cost_rub)}</span><a href="${esc(url)}" target="_blank" rel="noopener">Открыть visual ↗</a></div>`;return}
   box.className='media-stage';const msg=step?.status==='simulated'?'Demo не запускает реальную генерацию изображения':step?.status==='running'?'Vibe Marketolog генерирует баннер…':step?.error_message||'Изображение появится здесь';box.innerHTML=`<div class="media-placeholder"><b>${step?.status==='running'?'◌':'▣'}</b><span>${esc(msg)}</span></div>`;
 }
 function renderQA(){
@@ -121,7 +136,7 @@ function renderQA(){
 function renderVideo(){
   const step=getStep('video');setStepState('video',step);const box=$('#videoMedia'),url=mediaUrl(step);$('#videoSection').classList.toggle('hidden',state.workflow?.include_video===false);
   if(state.workflow?.include_video===false)return;
-  if(url){box.className='media-stage video-stage with-meta';box.innerHTML=`<video src="${esc(url)}" controls playsinline preload="metadata"></video><div class="media-meta"><span>${esc(step.model)}</span><span>${money(step.actual_cost_rub||step.estimated_cost_rub)}</span><a href="${esc(url)}" target="_blank" rel="noopener">Открыть оригинал ↗</a></div>`;return}
+  if(url){box.className='media-stage video-stage with-meta text-safe-media';box.innerHTML=`<div class="creative-visual video-visual"><video src="${esc(url)}" controls playsinline preload="metadata"></video>${copyOverlay()}</div><div class="media-meta"><span>${esc(step.model)} · text-safe</span><span>${money(step.actual_cost_rub||step.estimated_cost_rub)}</span><a href="${esc(url)}" target="_blank" rel="noopener">Открыть visual ↗</a></div>`;return}
   box.className='media-stage video-stage';const msg=step?.status==='running'?'Видео создаётся. Страница обновится автоматически…':step?.status==='skipped'?'Видео пропущено, чтобы не выйти за бюджет':step?.error_message||'Видео появится здесь';box.innerHTML=`<div class="media-placeholder"><b>▶</b><span>${esc(msg)}</span></div>`;
 }
 function renderStageRail(){
@@ -136,7 +151,7 @@ function renderWorkflow(){
   $('#executeBtn').disabled=terminal.has(w.status)||w.status==='running'||w.status==='awaiting_approval';$('#executeBtn').textContent=w.status==='planned'?'Запустить':'Продолжить';$('#refreshBtn').disabled=false;
   const waiting=w.status==='awaiting_approval',waitStep=w.steps.find(x=>x.status==='awaiting_approval');$('#approvalBanner').classList.toggle('hidden',!waiting);if(waitStep)$('#approvalText').textContent=`«${waitStep.title}» оценён в ${money(waitStep.estimated_cost_rub)}. Порог ручного подтверждения — ${money(w.approval_required_above_rub)}.`;
   renderStageRail();renderConcepts();renderSelection();renderBanner();renderQA();renderVideo();renderTech();
-  const complete=w.status==='complete';$('#campaignSummary').classList.toggle('hidden',!complete);if(complete)$('#summaryLine').textContent=`Потрачено ${money(w.actual_spend_rub-w.refunded_rub)} из ${money(w.budget_rub)} · осталось ${money(w.remaining_budget_rub)} · сверка: ${w.reconciliation_status}.`;
+  const complete=w.status==='complete';$('#campaignSummary').classList.toggle('hidden',!complete);if(complete){$('#summaryLine').textContent=`Потрачено ${money(w.actual_spend_rub-w.refunded_rub)} из ${money(w.budget_rub)} · осталось ${money(w.remaining_budget_rub)} · сверка: ${w.reconciliation_status}.`;refreshBooster()}else{$('#boosterPanel')?.classList.add('hidden')}
   updatePolling();
 }
 
@@ -165,6 +180,54 @@ function updatePolling(){
 }
 $('#autoRefresh').onchange=updatePolling;
 
+async function refreshBooster(){
+  if(!state.workflow||state.workflow.status!=='complete')return;
+  try{
+    state.booster=await api(`/api/v1/workflows/${state.workflow.id}/booster`);
+    const p=$('#boosterPanel'),b=$('#boosterBtn');
+    p.classList.remove('hidden');
+    $('#boosterAvailable').textContent=money(state.booster.available_rub);
+    $('#boosterText').textContent=state.booster.reason;
+    b.classList.toggle('hidden',!state.booster.eligible);
+    b.disabled=!state.booster.eligible;
+  }catch(e){$('#boosterPanel')?.classList.add('hidden')}
+}
+async function runBooster(){
+  if(!state.workflow)return;
+  const btn=$('#boosterBtn');btn.disabled=true;
+  try{
+    state.workflow=await api(`/api/v1/workflows/${state.workflow.id}/booster`,{method:'POST'});
+    renderWorkflow();switchView('workspace');toast('A/B-вариант добавлен внутри безопасного бюджета');
+  }catch(e){toast(e.message,true)}
+  finally{btn.disabled=false}
+}
+$('#boosterBtn').onclick=runBooster;
+
+function historyDate(v){try{return new Date(v).toLocaleString('ru-RU',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch{return''}}
+function renderHistory(){
+  const q=($('#historySearch')?.value||'').trim().toLowerCase();
+  const items=(state.history||[]).filter(x=>!q||`${x.brief} ${x.id} ${x.status} ${x.priority} ${x.mode}`.toLowerCase().includes(q));
+  $('#historyCount').textContent=`${items.length} кампаний`;
+  if(!items.length){$('#historyGrid').innerHTML='<div class="panel history-empty">Кампании не найдены.</div>';return}
+  $('#historyGrid').innerHTML=items.map(x=>`<button class="panel history-card" data-id="${esc(x.id)}"><div class="history-card-top"><span class="pill ${esc(x.status)}">${esc(x.status)}</span><small>${historyDate(x.updated_at)}</small></div><h3>${esc(x.brief)}</h3><div class="history-card-meta"><span>${esc(x.mode)} · ${esc(x.priority)}</span><b>${money(x.net_spend_rub)} / ${money(x.budget_rub)}</b></div><div class="history-assets"><span>${x.has_banner?'✓ баннер':'— баннер'}</span><span>${x.has_video?'✓ видео':'— видео'}</span><span>${x.execution_verified?'✓ verified':'— verification'}</span></div></button>`).join('');
+  $$('.history-card').forEach(card=>card.onclick=()=>openCampaign(card.dataset.id));
+}
+async function loadHistory(){
+  if(!state.key){$('#historyGrid').innerHTML='<div class="panel history-empty">Для истории сохраните Live control key в разделе «Подключение».</div>';$('#historyCount').textContent='0 кампаний';return}
+  try{const d=await api('/api/v1/campaigns?limit=100');state.history=d.items||[];renderHistory()}
+  catch(e){$('#historyGrid').innerHTML=`<div class="panel history-empty">${esc(e.message)}</div>`;toast(e.message,true)}
+}
+async function openCampaign(id){
+  try{
+    state.workflow=await api(`/api/v1/workflows/${id}`);
+    state.receipt=null;state.booster=null;renderWorkflow();switchView('workspace');
+    if(state.workflow.status==='complete')await maybeFetchReceipt();
+    toast('Кампания восстановлена из истории');
+  }catch(e){toast(e.message,true)}
+}
+$('#historyRefresh').onclick=loadHistory;
+$('#historySearch').oninput=renderHistory;
+
 async function reconcile(){try{state.workflow=await api(`/api/v1/workflows/${state.workflow.id}/reconcile`,{method:'POST'});renderWorkflow();toast(`Сверка: ${state.workflow.reconciliation_status}`)}catch(e){toast(e.message,true)}}
 $('#reconcileBtn').onclick=reconcile;
 async function maybeFetchReceipt(){if(!state.workflow)return;try{state.receipt=await api(`/api/v1/workflows/${state.workflow.id}/receipt`);renderReceipt()}catch{}}
@@ -177,7 +240,7 @@ $('#loadWorkflow').onclick=()=>$('#idModal').classList.add('show');$('.modal-clo
 $('#confirmLoad').onclick=async()=>{try{state.workflow=await api(`/api/v1/workflows/${$('#workflowIdInput').value.trim()}`);renderWorkflow();$('#idModal').classList.remove('show');switchView('workspace');toast('Workflow загружен')}catch(e){toast(e.message,true)}};
 
 $('#apiBase').value=state.api;$('#liveKey').value=state.key;
-$('#saveSettings').onclick=()=>{state.api=$('#apiBase').value.trim().replace(/\/$/,'');state.key=$('#liveKey').value.trim();sessionStorage.setItem('vp_api',state.api);sessionStorage.setItem('vp_key',state.key);toast('Настройки сохранены');checkHealth()};$('#testConnection').onclick=checkHealth;
+$('#saveSettings').onclick=()=>{state.api=$('#apiBase').value.trim().replace(/\/$/,'');state.key=$('#liveKey').value.trim();sessionStorage.setItem('vp_api',state.api);sessionStorage.setItem('vp_key',state.key);toast('Настройки сохранены');checkHealth();if(state.key)loadHistory()};$('#testConnection').onclick=checkHealth;
 function renderProviderLimit(info){
   const card=$('#providerLimitCard'),value=$('#dailyLimitValue'),meta=$('#dailyLimitMeta'),meter=$('#dailyLimitMeter');
   if(!card||!value||!meta||!meter)return;
