@@ -1181,14 +1181,14 @@ def _advance_demo(workflow: Workflow) -> Workflow:
     return deepcopy(workflow)
 
 
-@app.get("/")
+@app.get("/api")
 def root() -> dict[str, str]:
     return {
         "name": "VibePilot API",
         "version": API_VERSION,
         "docs": "/docs",
         "health": "/health",
-        "ui": "/app/",
+        "ui": "/",
     }
 
 
