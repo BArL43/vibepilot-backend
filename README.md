@@ -1,128 +1,118 @@
 # VibePilot API
 
-Reference implementation функции **Budget Contract** для
-[VibeMarketolog Agent API](https://lk.vibemarketolog.ru/docs/agent-api): агент
-сначала фиксирует денежный конверт и допустимые действия, затем повторно
-проверяет цену перед каждым списанием, умеет удешевить план и выпускает
-криптографически проверяемую квитанцию исполнения.
+VibePilot is a budget-aware orchestration layer for the VibeMarketolog Agent API. It turns a business brief into a guarded multi-step generation workflow: fixes a spending envelope, re-checks prices before paid actions, applies fallbacks when a step becomes too expensive, and produces a cryptographically verifiable execution receipt.
 
-Версия `0.3.0` — не макет генератора. Live-ветка вызывает реальный Agent API,
-сохраняет `request_id`/`generation_id`, принимает подписанные webhook, сверяет
-стоимость шагов с изменением баланса и переживает перезапуск процесса через SQL.
+Current product version: `0.6.2`.
 
-## Идея продукта
+The repository contains a FastAPI backend, SQL persistence, an operator web interface, tests, architecture notes and a live-run verification workflow. The production entrypoint is `app.server:app`; it keeps the tested v0.5 execution engine and adds the v0.6 product layer: text-safe media prompts, deterministic Russian copy overlays, Budget Booster, campaign history and the canonical frontend.
 
-Agent API безопасно решает один платный вызов. VibePilot добавляет объект уровня
-бизнес-задачи: «получить максимум результата, потратить не больше N ₽, оставить
-резерв, спросить подтверждение при дорогом или неожиданно подорожавшем шаге».
+## What the project demonstrates
 
-`POST /api/v1/budget/compare` показывает контрфактические варианты для нескольких
-бюджетов без выдуманного `quality score`. `POST /api/v1/contracts/compile`
-фиксирует выбранный сценарий, каталог, estimates, policy и digest. Активация сама
-ничего не списывает.
+- budget-aware orchestration of several paid AI generation steps;
+- live price estimation immediately before a paid call;
+- approval gates for expensive steps and runtime price drift;
+- model fallback and optional-step skipping instead of overspending;
+- idempotency keys and request fingerprints before generation;
+- async completion through signed webhooks with polling fallback;
+- SQLite/PostgreSQL persistence with optimistic revisions;
+- reconciliation of generation costs/refunds against balance changes;
+- Ed25519-signed execution receipts that can be verified offline;
+- an operator UI and persistent campaign history;
+- explicit separation between safe `demo` and spend-capable `live` modes.
 
-## Инварианты
+## Core invariants
 
-- `demo` никогда автоматически не становится `live`, даже если токен настроен.
-- Имена моделей берутся только из `GET /capabilities`.
-- В live цена берётся из бесплатного `POST /generate/estimate`; прямо перед
-  списанием проверяется финальное тело с `strict=true`.
-- Порог подтверждения — исполняемое правило:
-  `estimate > threshold OR price_drift > tolerance`.
-- При нехватке конверта сначала пробуется более дешёвая совместимая модель, затем
-  разрешённый `skip`; перерасход не используется как fallback.
-- `actual_spend_rub` меняется только по `cost` ответа Agent API, refund хранится
-  отдельно.
-- Async image/video не получают `complete` без polling или webhook от платформы.
-- До `POST /generate` сохраняются request fingerprint, состояние `running` и
-  детерминированный `X-Idempotency-Key`.
-- Live-маршруты дополнительно защищены `X-VibePilot-Live-Key`: посетитель
-  публичного Render не может потратить серверный баланс.
+- `demo` never becomes `live` automatically, even when an API token is configured.
+- Models are selected from `GET /capabilities` rather than from a hardcoded production catalog.
+- Live price is taken from `POST /generate/estimate`, then checked again before the paid request.
+- Approval is required when `estimate > threshold` or price drift exceeds the configured tolerance.
+- When the envelope is insufficient, VibePilot tries a cheaper compatible model or an allowed `skip`; it does not overspend as a fallback.
+- `actual_spend_rub` changes only from upstream `cost`; refunds are tracked separately.
+- Async image/video steps are not marked complete until a platform status or signed webhook confirms completion.
+- Before `POST /generate`, the workflow stores a request fingerprint, `running` state and deterministic `X-Idempotency-Key`.
+- Live routes require a separate `X-VibePilot-Live-Key`, so a public frontend cannot spend the server balance without operator authorization.
 
-## Два честных режима
+## Demo vs live
 
-| Режим | Основа цены | Сетевые генерации | Квитанция |
-|---|---|---:|---|
-| `demo` | `catalog_indicative` из публичного `/capabilities` | нет | `simulation`, расход `0` |
-| `live` | `vibe_estimate` для точного payload | да | generation IDs и фактический cost |
+| Mode | Price source | Paid generation | Receipt |
+| --- | --- | ---: | --- |
+| `demo` | indicative catalog values | no | simulation, spend `0` |
+| `live` | exact Vibe estimate for the payload | yes | generation IDs and actual cost |
 
-Demo-сценарий нужен для интерфейса и безопасного знакомства. Он не называется
-выполненной работой и не выдаёт каталожную цену за фактическое списание.
+Demo mode exists for the interface and safe review. It does not pretend that a simulated run is a paid execution.
 
-## Конвейер
+## Execution flow
 
-1. Первая текстовая модель строит три концепции.
-2. Другая доступная модель независимо оценивает их по прозрачной JSON-рубрике.
-3. Победивший безопасный prompt передаётся image-модели.
-4. Перед каждым шагом выполняется свежий estimate; при скачке цены применяется
-   fallback или approval.
-5. Баннер передаётся в корректное model-specific поле image-to-video.
-6. Async-результат приходит через HMAC-SHA256 webhook; polling остаётся fallback.
-7. SQL state machine фиксирует факты и сверяет сумму cost/refund с дельтой
-   баланса.
-8. Receipt v2 подписывается Ed25519 и проверяется офлайн с закреплённым публичным
-   ключом deployment.
+1. A text model creates several campaign concepts.
+2. Another available model evaluates them using a structured rubric.
+3. The selected visual prompt is sent to an image model.
+4. Before each paid step VibePilot refreshes the estimate and applies fallback or approval rules.
+5. Generated media is kept text-safe; exact Russian copy is rendered as a deterministic overlay.
+6. The generated image can be passed to an image-to-video model using the model-specific payload.
+7. Async completion is accepted from an HMAC-SHA256 webhook, with polling as a fallback.
+8. SQL state records the workflow and reconciliation facts.
+9. Receipt v2 is signed with Ed25519 and can be checked offline.
+10. After a completed campaign, Budget Booster can spend only the safe free part of the envelope on an additional A/B banner.
 
-Подробности: [архитектура](docs/ARCHITECTURE.md),
-[продуктовый RFC](docs/RFC-001-budget-contract.md),
-[evals](docs/EVALS.md), [короткий маршрут ревью](docs/REVIEW_GUIDE.md).
+More detail: [architecture](docs/ARCHITECTURE.md), [product RFC](docs/RFC-001-budget-contract.md), [evals](docs/EVALS.md), [review guide](docs/REVIEW_GUIDE.md).
 
-## Локальный запуск
+## Local run
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
-uvicorn app.main:app --reload
+uvicorn app.server:app --reload
 ```
 
-Swagger: `http://localhost:8000/docs`. Переменные `.env` нужно загрузить в
-окружение до старта; сам файл игнорируется Git.
+Swagger: `http://localhost:8000/docs`.
 
-## Основные маршруты
+Environment variables from `.env` must be loaded before startup; `.env` itself is ignored by Git.
 
-- `POST /api/v1/budget/compare` — сравнить результат при разных конвертах.
-- `POST /api/v1/contracts/compile` — создать immutable Budget Contract.
-- `POST /api/v1/contracts/{id}/activate` — создать workflow без списания.
-- `POST /api/v1/workflows/{id}/execute` — выполнить до async-шага или gate.
-- `POST /api/v1/workflows/{id}/refresh` — polling fallback и продолжение.
-- `POST /api/v1/workflows/{id}/approve` — решение человека.
-- `POST /api/v1/workflows/{id}/reconcile` — повторная сверка с балансом.
-- `POST /api/v1/webhooks/vibe` — HMAC-проверенный callback.
-- `POST /api/v1/integrations/vibe/webhook-test` — бесплатный end-to-end self-test.
-- `GET /api/v1/workflows/{id}/receipt` — подписанное доказательство исполнения.
-- `POST /api/v1/receipts/verify` — проверка подписи без доступа к workflow.
-- `GET /api/v1/receipts/public-key` — публичный ключ deployment.
+## Main API routes
 
-Для операций live нужен заголовок:
+- `GET /api/v1/product` - current product metadata.
+- `GET /api/v1/campaigns` - recent campaign history for an authorized operator.
+- `POST /api/v1/budget/compare` - compare outcomes for several envelopes.
+- `POST /api/v1/contracts/compile` - create an immutable Budget Contract.
+- `POST /api/v1/contracts/{id}/activate` - create a workflow without spending.
+- `POST /api/v1/workflows/{id}/execute` - execute until an async step or approval gate.
+- `POST /api/v1/workflows/{id}/refresh` - polling fallback and continuation.
+- `POST /api/v1/workflows/{id}/approve` - human decision for a gated step.
+- `POST /api/v1/workflows/{id}/reconcile` - repeat balance/cost reconciliation.
+- `GET /api/v1/workflows/{id}/creative` - assembled creative package and deterministic copy.
+- `GET|POST /api/v1/workflows/{id}/booster` - inspect or run an additional safe-budget banner.
+- `POST /api/v1/webhooks/vibe` - HMAC-verified callback.
+- `POST /api/v1/integrations/vibe/webhook-test` - free end-to-end webhook self-test.
+- `GET /api/v1/workflows/{id}/receipt` - signed execution evidence.
+- `POST /api/v1/receipts/verify` - verify a receipt without workflow access.
+- `GET /api/v1/receipts/public-key` - deployment public key.
+
+Live operations require:
 
 ```text
 X-VibePilot-Live-Key: <VIBEPILOT_LIVE_KEY>
 ```
 
-VibeMarketolog API token никогда не передаётся браузеру.
+The VibeMarketolog API token is never sent to the browser.
 
-## Persistence и Render
+## Persistence and deployment
 
-SQLAlchemy использует SQLite по умолчанию и PostgreSQL через `DATABASE_URL` на
-Render. Оптимистические ревизии не дают устаревшему worker перезаписать новое
-состояние; отдельный индекс связывает `generation_id` с workflow/step.
+SQLAlchemy uses SQLite by default and PostgreSQL through `DATABASE_URL` in deployment. Optimistic revisions prevent a stale worker from overwriting newer workflow state; a separate index links `generation_id` to workflow/step.
 
-В Render задаются:
+The Render configuration starts `uvicorn app.server:app`. Production configuration expects:
 
-- `VIBE_API_TOKEN` — ключ со scopes `read` и `generate`;
-- `VIBEPILOT_LIVE_KEY` — независимый операторский секрет;
-- `PUBLIC_BASE_URL` — публичный HTTPS URL backend без завершающего `/`;
-- `VIBE_WEBHOOK_SECRET` — секрет подписи, выданный для Agent API key;
-- `RECEIPT_SIGNING_KEY` — стабильный Ed25519 private key;
-- `DATABASE_URL` — PostgreSQL URL (для production).
+- `VIBE_API_TOKEN` - Agent API key with the required scopes;
+- `VIBEPILOT_LIVE_KEY` - independent operator secret;
+- `PUBLIC_BASE_URL` - public HTTPS backend URL without a trailing slash;
+- `VIBE_WEBHOOK_SECRET` - webhook signature secret;
+- `RECEIPT_SIGNING_KEY` - stable Ed25519 private key;
+- `DATABASE_URL` - PostgreSQL URL for persistent production state.
 
-Без live-секретов сервис остаётся безопасным demo и сообщает об этом в
-`/health`; он не имитирует сетевые вызовы. Пошаговый доказательный прогон:
-[LIVE_RUN.md](LIVE_RUN.md).
+Without live secrets, the service stays in safe demo mode and reports that state through `/health`. It does not fake upstream generation. A real low-cost verification procedure is documented in [LIVE_RUN.md](LIVE_RUN.md).
 
-## Проверка
+## Verification
 
 ```bash
 ruff check app scripts tests
@@ -130,14 +120,10 @@ ruff format --check app scripts tests
 pytest -q
 ```
 
-Тесты проверяют fail-closed live, реальные политики threshold/drift, fallback
-дорогой image-модели, scope reduction видео, idempotency, signed webhook и его
-self-test, SQL persistence/concurrency, reconciliation, Ed25519 и обнаружение
-подмены receipt.
+The suite covers fail-closed live behavior, threshold/drift policies, fallback, scope reduction, idempotency, signed webhooks, persistence/concurrency, reconciliation, Ed25519 receipts, v0.6 planner behavior, campaign history and the composed production server entrypoint.
 
-## Честная граница доказательства
+CI runs the same lint, formatting, compile and test checks on every push and pull request.
 
-Код, контрактные тесты и бесплатный `/capabilities` можно проверить без
-пользовательского токена. Единственный намеренно отсутствующий артефакт —
-`evidence/live-receipt.json`: он появится только после настоящего дешёвого run.
-Инструкция не предлагает подменять его демонстрационными данными.
+## Evidence boundary
+
+Code, contract tests and free `/capabilities` checks can be reviewed without a user token. The repository intentionally does not contain a fabricated `evidence/live-receipt.json`: that artifact should exist only after a real paid run. The instructions in `LIVE_RUN.md` preserve that boundary instead of substituting demo data for execution evidence.
