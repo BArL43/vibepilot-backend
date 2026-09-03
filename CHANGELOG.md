@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2
+
+Current product layer on top of the v0.5 execution engine:
+
+- production entrypoint moved to `app.server:app`;
+- added the operator frontend and canonical root route;
+- added persistent campaign history for an authorized live operator;
+- added text-safe media prompts and deterministic Russian copy overlays;
+- added Budget Booster for an extra A/B banner that can use only the safe free part of a completed workflow budget;
+- kept v0.5 budget, estimate, approval, idempotency, reconciliation and signed-receipt guarantees intact;
+- added regression coverage for the v0.6 planner and campaign history.
+
 ## 0.3.1
 
 - Добавлена адаптивная реакция на лимит prompt, который возвращает живой
