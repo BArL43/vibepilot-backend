@@ -1,10 +1,25 @@
 # VibePilot API
 
+[![CI](https://github.com/BArL43/vibepilot-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/BArL43/vibepilot-backend/actions/workflows/ci.yml)
+
 VibePilot is a budget-aware orchestration layer for the VibeMarketolog Agent API. It turns a business brief into a guarded multi-step generation workflow: fixes a spending envelope, re-checks prices before paid actions, applies fallbacks when a step becomes too expensive, and produces a cryptographically verifiable execution receipt.
 
 Current product version: `0.6.2`.
 
 The repository contains a FastAPI backend, SQL persistence, an operator web interface, tests, architecture notes and a live-run verification workflow. The production entrypoint is `app.server:app`; it keeps the tested v0.5 execution engine and adds the v0.6 product layer: text-safe media prompts, deterministic Russian copy overlays, Budget Booster, campaign history and the canonical frontend.
+
+## Quick code review
+
+For a short architecture-focused pass through the backend:
+
+- [`app/server.py`](app/server.py) — production entrypoint and composition of the current product layer;
+- [`app/main.py`](app/main.py) — tested execution engine, API contracts, approval/fallback and live-run control flow;
+- [`app/planner.py`](app/planner.py) and [`app/v060.py`](app/v060.py) — workflow planning and v0.6 product behavior;
+- [`app/store.py`](app/store.py) — SQL persistence and workflow state;
+- [`app/vibe_client.py`](app/vibe_client.py) — external Agent API integration;
+- [`tests/`](tests/) — API, server, history and v0.6 contract coverage;
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/RFC-001-budget-contract.md`](docs/RFC-001-budget-contract.md) — architecture and budget invariants;
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint, formatting, compile and pytest checks.
 
 ## What the project demonstrates
 
